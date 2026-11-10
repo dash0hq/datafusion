@@ -361,6 +361,36 @@ p2
 p2e1
 p2m1e1
 
+# LIKE keeps dictionary-encoded operands whose values already have the
+# common string type, and casts the others to it.
+statement ok
+CREATE TABLE dictionary_patterns AS SELECT
+  arrow_cast(text, 'Dictionary(Int32, Utf8)') AS text,
+  arrow_cast(pattern, 'Dictionary(Int32, Utf8)') AS pattern,
+  arrow_cast(pattern, 'LargeUtf8') AS large_pattern
+FROM (VALUES ('abc', 'a%'), ('xyz', 'a%')) AS t(text, pattern);
+
+query TT
+EXPLAIN SELECT text LIKE pattern, 'abc' LIKE pattern, text LIKE large_pattern
+FROM dictionary_patterns;
+----
+logical_plan
+01)Projection: dictionary_patterns.text LIKE dictionary_patterns.pattern, Utf8("abc") LIKE dictionary_patterns.pattern, CAST(dictionary_patterns.text AS LargeUtf8) LIKE dictionary_patterns.large_pattern
+02)--TableScan: dictionary_patterns projection=[text, pattern, large_pattern]
+physical_plan
+01)ProjectionExec: expr=[text@0 LIKE pattern@1 as dictionary_patterns.text LIKE dictionary_patterns.pattern, abc LIKE pattern@1 as Utf8("abc") LIKE dictionary_patterns.pattern, CAST(text@0 AS LargeUtf8) LIKE large_pattern@2 as dictionary_patterns.text LIKE dictionary_patterns.large_pattern]
+02)--DataSourceExec: partitions=1, partition_sizes=[1]
+
+query BBB
+SELECT text LIKE pattern, 'abc' LIKE pattern, text LIKE large_pattern
+FROM dictionary_patterns;
+----
+true true true
+false true false
+
+statement ok
+DROP TABLE dictionary_patterns;
+
 ## VARCHAR with length support
 
 # Lengths can be used by default

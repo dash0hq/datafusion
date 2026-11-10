@@ -2066,6 +2066,19 @@ pub fn like_coercion(lhs_type: &DataType, rhs_type: &DataType) -> Option<DataTyp
         .or_else(|| null_coercion(lhs_type, rhs_type))
 }
 
+/// Returns the type of the values that the LIKE kernels match for an operand
+/// of type `data_type`, looking through dictionary encoding.
+///
+/// The kernels accept encoded operands directly as long as both sides have
+/// the same value type, so an operand whose value type already matches the
+/// type returned by [`like_coercion`] does not need to be cast.
+pub fn like_value_type(data_type: &DataType) -> &DataType {
+    match data_type {
+        DataType::Dictionary(_, value_type) => like_value_type(value_type),
+        _ => data_type,
+    }
+}
+
 /// Coercion rules for regular expression comparison operations with NULL input.
 fn regex_null_coercion(lhs_type: &DataType, rhs_type: &DataType) -> Option<DataType> {
     use arrow::datatypes::DataType::*;

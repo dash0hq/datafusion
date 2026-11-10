@@ -33,7 +33,8 @@ use datafusion_expr::expr_rewriter::coerce_plan_expr_for_schema;
 use datafusion_expr::expr_schema::{cast_subquery, cast_subquery_columns};
 use datafusion_expr::logical_plan::Subquery;
 use datafusion_expr::type_coercion::binary::{
-    comparison_coercion_with_session_timezone, like_coercion, regex_coercion,
+    comparison_coercion_with_session_timezone, like_coercion, like_value_type,
+    regex_coercion,
 };
 use datafusion_expr::type_coercion::functions::{
     UDFCoercionExt, fields_with_udf, value_fields_with_higher_order_udf_and_lambdas,
@@ -661,16 +662,16 @@ impl<'a> TypeCoercionRewriter<'a> {
 
     /// Coerce the value and pattern expressions of a string pattern matching
     /// expression (`LIKE`, `ILIKE` or `SIMILAR TO`) to a common type using
-    /// the provided coercion rules. `LIKE` can preserve a dictionary-encoded
-    /// value expression, while regex array kernels require both operands to
-    /// have the same physical string type.
+    /// the provided coercion rules. `LIKE` keeps encoded operands whose values
+    /// already have the common type, while regex array kernels require both
+    /// operands to have the same physical string type.
     fn coerce_like_operands(
         &self,
         expr: Expr,
         pattern: Expr,
         coercion: fn(&DataType, &DataType) -> Option<DataType>,
         op_name: &str,
-        preserve_utf8_dictionary: bool,
+        preserve_encodings: bool,
     ) -> Result<(Box<Expr>, Box<Expr>)> {
         let left_type = expr.get_type(self.schema)?;
         let right_type = pattern.get_type(self.schema)?;
@@ -679,15 +680,15 @@ impl<'a> TypeCoercionRewriter<'a> {
                 "There isn't a common type to coerce {left_type} and {right_type} in {op_name} expression"
             )
         })?;
-        let expr = match left_type {
-            DataType::Dictionary(_, inner)
-                if preserve_utf8_dictionary && *inner == DataType::Utf8 =>
-            {
-                Box::new(expr)
+        let coerce = |operand: Expr, operand_type: &DataType| -> Result<Box<Expr>> {
+            if preserve_encodings && like_value_type(operand_type) == &coerced_type {
+                Ok(Box::new(operand))
+            } else {
+                Ok(Box::new(operand.cast_to(&coerced_type, self.schema)?))
             }
-            _ => Box::new(expr.cast_to(&coerced_type, self.schema)?),
         };
-        let pattern = Box::new(pattern.cast_to(&coerced_type, self.schema)?);
+        let expr = coerce(expr, &left_type)?;
+        let pattern = coerce(pattern, &right_type)?;
         Ok((expr, pattern))
     }
 }

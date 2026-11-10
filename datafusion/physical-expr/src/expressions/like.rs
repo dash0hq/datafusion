@@ -6,6 +6,7 @@ use crate::PhysicalExpr;
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion_common::{Result, assert_or_internal_err};
+use datafusion_expr::type_coercion::binary::like_value_type;
 use datafusion_expr::{ColumnarValue, Operator};
 use datafusion_physical_expr_common::datum::apply_cmp;
 use std::hash::Hash;
@@ -199,14 +200,6 @@ impl LikeExpr {
     }
 }
 
-/// used for optimize Dictionary like
-fn can_like_type(from_type: &DataType) -> bool {
-    match from_type {
-        DataType::Dictionary(_, inner_type_from) => **inner_type_from == DataType::Utf8,
-        _ => false,
-    }
-}
-
 /// Create a like expression, erroring if the argument types are not compatible.
 pub fn like(
     negated: bool,
@@ -218,7 +211,7 @@ pub fn like(
     let expr_type = &expr.data_type(input_schema)?;
     let pattern_type = &pattern.data_type(input_schema)?;
     assert_or_internal_err!(
-        expr_type.eq(pattern_type) || can_like_type(expr_type),
+        like_value_type(expr_type) == like_value_type(pattern_type),
         "The type of {expr_type} AND {pattern_type} of like physical should be same"
     );
     Ok(Arc::new(LikeExpr::new(
