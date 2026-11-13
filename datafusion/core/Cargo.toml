@@ -239,6 +239,10 @@ name = "filter_query_sql"
 
 [[bench]]
 harness = false
+name = "ree_like"
+
+[[bench]]
+harness = false
 name = "in_list_rewrite"
 
 [[bench]]
