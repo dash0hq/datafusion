@@ -213,7 +213,9 @@ impl DefaultPhysicalPlanner {
         logical_plan: &'a LogicalPlan,
         session_state: &'a dyn Session,
     ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
-        Box::pin(self.create_physical_plan_inner(logical_plan, session_state))
+        Box::pin(datafusion_common::scalar::with_plan_scoped_nulls(
+            self.create_physical_plan_inner(logical_plan, session_state),
+        ))
     }
 
     async fn create_physical_plan_inner(

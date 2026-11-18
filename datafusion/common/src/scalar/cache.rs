@@ -4,14 +4,18 @@
 
 //! Array caching utilities for scalar values
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::iter::repeat_n;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use arrow::array::{Array, ArrayRef, PrimitiveArray, new_null_array};
+use arrow::array::{Array, ArrayRef, AsArray, PrimitiveArray, new_null_array};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, DataType, Int8Type, Int16Type, Int32Type, Int64Type,
+    ArrowDictionaryKeyType, DataType, Fields, Int8Type, Int16Type, Int32Type, Int64Type,
     UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
+
+use super::ScalarValue;
 
 /// Maximum number of rows to cache to be conservative on memory usage
 const MAX_CACHE_SIZE: usize = 1024 * 1024;
@@ -198,5 +202,81 @@ pub(crate) fn get_or_create_cached_key_array<K: ArrowDictionaryKeyType>(
             .collect();
             key_array
         }
+    }
+}
+
+/// Narrowest struct whose typed null [`with_plan_scoped_nulls`] shares.
+const SHARED_NULL_STRUCT_MIN_WIDTH: usize = 64;
+
+tokio::task_local! {
+    /// Typed null structs built in one physical planning call, keyed by the address of their
+    /// `Fields`. Each entry owns that `Fields`, so the address cannot be reused while it lives.
+    static PLAN_NULL_STRUCTS: RefCell<HashMap<usize, (Fields, ScalarValue)>>;
+}
+
+/// Runs `f` with a map that shares the typed null of each wide struct type for as long as `f`
+/// runs. A typed null is immutable, so one value per `Fields` allocation serves every use.
+pub async fn with_plan_scoped_nulls<F: Future>(f: F) -> F::Output {
+    PLAN_NULL_STRUCTS
+        .scope(RefCell::new(HashMap::new()), f)
+        .await
+}
+
+pub(crate) fn plan_scoped_null_struct(fields: &Fields) -> ScalarValue {
+    let build = || {
+        ScalarValue::Struct(
+            new_null_array(&DataType::Struct(fields.to_owned()), 1)
+                .as_struct()
+                .to_owned()
+                .into(),
+        )
+    };
+    if fields.len() < SHARED_NULL_STRUCT_MIN_WIDTH {
+        return build();
+    }
+    let key = fields.as_ref().as_ptr() as usize;
+    PLAN_NULL_STRUCTS
+        .try_with(|map| {
+            if let Some((_, value)) = map.borrow().get(&key) {
+                return value.clone();
+            }
+            let value = build();
+            map.borrow_mut()
+                .insert(key, (fields.clone(), value.clone()));
+            value
+        })
+        .unwrap_or_else(|_| build())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::Field;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    #[test]
+    fn plan_scoped_nulls_are_shared_within_one_call_only() {
+        let struct_type = DataType::Struct(
+            (0..SHARED_NULL_STRUCT_MIN_WIDTH)
+                .map(|i| Field::new(format!("c{i}"), DataType::Int32, true))
+                .collect(),
+        );
+        let null = || match ScalarValue::try_new_null(&struct_type).unwrap() {
+            ScalarValue::Struct(array) => array,
+            other => panic!("expected a struct null, got {other:?}"),
+        };
+        let call = with_plan_scoped_nulls(async {
+            let first = null();
+            assert!(Arc::ptr_eq(&first, &null()));
+            Arc::downgrade(&first)
+        });
+        let Poll::Ready(shared) =
+            pin!(call).poll(&mut Context::from_waker(Waker::noop()))
+        else {
+            unreachable!("the call never awaits");
+        };
+        assert!(shared.upgrade().is_none());
+        assert!(!Arc::ptr_eq(&null(), &null()));
     }
 }

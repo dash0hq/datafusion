@@ -85,7 +85,11 @@ use arrow::datatypes::{
     UnionMode, i256, validate_decimal_precision_and_scale,
 };
 use arrow::util::display::{ArrayFormatter, FormatOptions, array_value_to_string};
-use cache::{get_or_create_cached_key_array, get_or_create_cached_null_array};
+pub use cache::with_plan_scoped_nulls;
+use cache::{
+    get_or_create_cached_key_array, get_or_create_cached_null_array,
+    plan_scoped_null_struct,
+};
 use chrono::{Duration, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone};
 use half::f16;
 use num_traits::ToPrimitive;
@@ -1423,12 +1427,7 @@ impl ScalarValue {
             DataType::LargeListView(field_ref) => ScalarValue::LargeListView(Arc::new(
                 GenericListViewArray::new_null(Arc::clone(field_ref), 1),
             )),
-            DataType::Struct(fields) => ScalarValue::Struct(
-                new_null_array(&DataType::Struct(fields.to_owned()), 1)
-                    .as_struct()
-                    .to_owned()
-                    .into(),
-            ),
+            DataType::Struct(fields) => plan_scoped_null_struct(fields),
             DataType::Map(fields, sorted) => ScalarValue::Map(
                 new_null_array(&DataType::Map(fields.to_owned(), sorted.to_owned()), 1)
                     .as_map()
